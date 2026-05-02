@@ -293,11 +293,11 @@ with aba_previsao:
         st.warning("Você precisa ter pelo menos uma feira registrada para usar a previsão.")
     else:
         st.info(
-            f"Previsão baseada em **{metricas['n_feiras']} feira(s)**. "
-            f"Média histórica: **{metricas['kg_medio_por_feira']:.0f} kg/feira** · "
-            f"Preço @ médio: **R$ {metricas['preco_arroba_medio']:.2f}** · "
-            f"Margem média: **{metricas['margem_media']:.1f}%** · "
-            f"Extras médios: **R$ {metricas['extras_medio']:.2f}/feira**"
+            f"Previsão baseada em {metricas['n_feiras']} feira(s)  ·  "
+            f"Média histórica: {metricas['kg_medio_por_feira']:.0f} kg/feira  ·  "
+            f"Preço @ médio: R$ {metricas['preco_arroba_medio']:.2f}  ·  "
+            f"Margem média: {metricas['margem_media']:.1f}%  ·  "
+            f"Extras médios: R$ {metricas['extras_medio']:.2f}/feira"
         )
 
         col_sim1, col_sim2 = st.columns(2)
