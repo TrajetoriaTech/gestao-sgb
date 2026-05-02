@@ -8,7 +8,10 @@ from ops import (
     registrar_extra, excluir_extra, buscar_extras_feira,
     calcular_saude_fiados, salvar_threshold_fiado, salvar_fator_quebra,
 )
-from database import Session, Feira, Compra, Cliente, HistoricoFiado, ExtraFeira, Configuracao
+from database import Session, Feira, Compra, Cliente, HistoricoFiado, ExtraFeira, Configuracao, criar_banco
+
+# Garante que o banco existe antes de qualquer operação
+criar_banco()
 from importar import parsear_notion_csv, parsear_notas_iphone, importar_feiras
 import pandas as pd
 
@@ -649,17 +652,40 @@ with aba_importar:
             "Cole abaixo o texto do Bloco de Notas exatamente como está. "
             "Pode colar múltiplas feiras de uma vez."
         )
-        texto_notas = st.text_area(
-            "Texto das anotações",
-            height=280,
-            placeholder="Domingo 05 de abril 2026\nPeso:\n111\n174\n\nPreço:\n280\n300\n\nCaixa in: 267,00 + 341,00\n...",
-            key="notas_texto"
-        )
+
+        col_notas1, col_notas2 = st.columns([3, 1])
+        with col_notas2:
+            preco_kg_dia = st.number_input(
+                "💰 Preço do kg (R$)",
+                min_value=0.0,
+                value=0.0,
+                step=0.5,
+                format="%.2f",
+                key="preco_kg_dia",
+                help=(
+                    "Usado para converter fiados anotados em kg (ex: '4,5kg fiado'). "
+                    "Se deixar em 0, linhas com kg serão marcadas como pendentes para revisão manual."
+                )
+            )
+            if preco_kg_dia > 0:
+                st.caption(f"✅ 1 kg = R$ {preco_kg_dia:.2f}")
+            else:
+                st.caption("⚠️ Sem preço/kg — fiados em kg ficam pendentes.")
+
+        with col_notas1:
+            texto_notas = st.text_area(
+                "Texto das anotações",
+                height=240,
+                placeholder="Domingo 05 de abril 2026\nPeso:\n111\n174\n\nPreço:\n280\n300\n\nCaixa in: 267,00 + 341,00\n...",
+                key="notas_texto"
+            )
+
         if st.button("🔍 Interpretar texto", type="primary"):
             if texto_notas.strip():
                 with st.spinner("Interpretando anotações..."):
-                    feiras_preview = parsear_notas_iphone(texto_notas)
+                    feiras_preview = parsear_notas_iphone(texto_notas, preco_kg_dia=preco_kg_dia)
                 st.session_state['import_preview'] = feiras_preview
+                # FIX: não limpa o texto aqui — só após importação confirmada
             else:
                 st.warning("Cole o texto antes de interpretar.")
 
@@ -688,6 +714,7 @@ with aba_importar:
                     f"{l['peso']}kg@{l['preco']}" for l in f.get('lotes', [])
                 ) or "⚠️ sem lote"
                 fiados_n = len(f.get('fiados_detectados', []))
+                fiados_revisao = sum(1 for fd in f.get('fiados_detectados', []) if fd.get('revisar'))
                 rows_prev.append({
                     "Data": f['data'],
                     "Caixa IN": f"R$ {f['caixa_in']:.2f}",
@@ -695,33 +722,55 @@ with aba_importar:
                     "Pix": f"R$ {f['total_pix']:.2f}",
                     "Cartão": f"R$ {f['total_cartao']:.2f}",
                     "Lotes": lotes_desc,
-                    "Fiados detectados": fiados_n,
+                    "Fiados": fiados_n,
+                    "⚠️ Revisão": fiados_revisao if fiados_revisao else "—",
                 })
             st.dataframe(pd.DataFrame(rows_prev), use_container_width=True, hide_index=True)
 
-            # Fiados detectados — expandível
+            # Fiados detectados — expandível com coluna de revisão
             todos_fiados = [(f['data'], fd) for f in novas for fd in f.get('fiados_detectados', [])]
+            n_revisao = sum(1 for _, fd in todos_fiados if fd.get('revisar'))
+
             if todos_fiados:
-                with st.expander(f"🤝 {len(todos_fiados)} movimentação(ões) de fiado detectada(s) — clique para revisar"):
-                    st.caption(
-                        "A IA interpretou as observações automaticamente. "
-                        "Revise antes de importar — valores ou nomes podem precisar de ajuste."
-                    )
+                label_exp = f"🤝 {len(todos_fiados)} movimentação(ões) detectada(s)"
+                if n_revisao:
+                    label_exp += f" — ⚠️ {n_revisao} precisam de revisão"
+                with st.expander(label_exp + " — clique para revisar"):
+
+                    if n_revisao:
+                        st.warning(
+                            f"⚠️ **{n_revisao} lançamento(s) marcados para revisão** — "
+                            "eles **não serão importados** automaticamente. "
+                            "Lance-os manualmente na aba Fiados após a importação.",
+                            icon="✏️"
+                        )
+
                     rows_fiad = []
                     for data_f, fd in todos_fiados:
+                        revisar_flag = "⚠️ Revisar" if fd.get('revisar') else "✅ OK"
+                        motivo = fd.get('motivo_revisao', '') or '—'
                         rows_fiad.append({
                             "Feira": data_f,
                             "Tipo": "💸 Débito" if fd['tipo'] == 'DEBITO' else "💰 Crédito",
                             "Nome": fd['nome'],
-                            "Valor": f"R$ {fd['valor']:.2f}",
-                            "Descrição": fd.get('descricao', '')[:80],
+                            "Valor": f"R$ {fd['valor']:.2f}" if fd['valor'] else "—",
+                            "Status": revisar_flag,
+                            "Observação": motivo[:80],
+                            "Descrição": fd.get('descricao', '')[:60],
                         })
                     st.dataframe(pd.DataFrame(rows_fiad), use_container_width=True, hide_index=True)
 
+            n_fiados_ok = sum(
+                1 for _, fd in todos_fiados
+                if not fd.get('revisar') and fd.get('valor', 0) > 0
+            )
             importar_fiados_toggle = st.toggle(
-                "Importar fiados detectados automaticamente",
+                f"Importar fiados confirmados automaticamente ({n_fiados_ok} OK / {n_revisao} pendentes)",
                 value=False,
-                help="Se desativado, importa só as feiras. Você pode lançar os fiados manualmente depois."
+                help=(
+                    "Importa apenas fiados com status ✅ OK e valor > 0. "
+                    "Os marcados como ⚠️ Revisar são sempre pulados — lance-os manualmente."
+                )
             )
 
             st.divider()
@@ -735,9 +784,10 @@ with aba_importar:
 
                 if resultado['importadas'] > 0:
                     st.success(
-                        f"✅ {resultado['importadas']} feira(s) importada(s) com sucesso! "
+                        f"✅ {resultado['importadas']} feira(s) importada(s)! "
                         f"| Puladas: {resultado['puladas']} | Erros: {resultado['erros']}"
                     )
+                    # FIX: reseta o preview e o texto após importação confirmada
                     if 'import_preview' in st.session_state:
                         del st.session_state['import_preview']
                     st.rerun()
