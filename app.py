@@ -872,17 +872,22 @@ with aba_gerenciar:
         with col_del:
             st.subheader("🗑 Mover para Lixeira")
             if ativas:
-                id_del = st.selectbox(
-                    "Selecionar ID para remover",
+                ids_del = st.multiselect(
+                    "Selecionar feiras para remover",
                     options=[f.id for f in ativas],
+                    format_func=lambda fid: f"{next(f.data.strftime('%d/%m/%Y') for f in ativas if f.id == fid)} (ID {fid})",
                     key="excluir_seletor"
                 )
                 if st.button("Mover para Lixeira", type="primary", use_container_width=True):
-                    f_obj = session.query(Feira).filter_by(id=id_del).first()
-                    if f_obj:
-                        f_obj.ativo = 0
+                    if ids_del:
+                        for id_del in ids_del:
+                            f_obj = session.query(Feira).filter_by(id=id_del).first()
+                            if f_obj:
+                                f_obj.ativo = 0
                         session.commit()
                         st.rerun()
+                    else:
+                        st.warning("Selecione ao menos uma feira.")
             else:
                 st.write("Não há registros ativos.")
 
