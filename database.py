@@ -1,13 +1,37 @@
-from sqlalchemy import create_engine, Column, Integer, String, Numeric, Date, ForeignKey, CheckConstraint, DateTime
+import os
+from sqlalchemy import create_engine, Column, Integer, String, Numeric, Date, ForeignKey, CheckConstraint, DateTime, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
 
-# 1. Configuração do Banco
-engine = create_engine('sqlite:///banca.db')
+# ─────────────────────────────────────────────
+# CONFIGURAÇÃO DO BANCO
+# Prioridade:
+#   1. Variável de ambiente DATABASE_URL (Supabase/PostgreSQL no Streamlit Cloud)
+#   2. SQLite local (desenvolvimento)
+# ─────────────────────────────────────────────
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///banca.db")
+
+# Supabase usa "postgres://" mas SQLAlchemy exige "postgresql://"
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+# Pool ajustado para PostgreSQL (sem efeito no SQLite)
+if DATABASE_URL.startswith("postgresql"):
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_recycle=300,
+    )
+else:
+    engine = create_engine(DATABASE_URL)
+
 Session = sessionmaker(bind=engine)
 Base = declarative_base()
 
-# 2. Definição das Tabelas
+# ─────────────────────────────────────────────
+# MODELOS
+# ─────────────────────────────────────────────
 
 class Configuracao(Base):
     __tablename__ = 'configuracoes'
@@ -61,20 +85,23 @@ class ExtraFeira(Base):
     descricao = Column(String, nullable=False)
     valor = Column(Numeric(10, 2), nullable=False)
 
-# 3. Criação e inicialização do banco
+# ─────────────────────────────────────────────
+# INICIALIZAÇÃO
+# ─────────────────────────────────────────────
+
 def criar_banco():
     Base.metadata.create_all(engine)
     session = Session()
     try:
         defaults = {
             'fator_quebra': 0.10,
-            'threshold_fiado': 0.15,   # 15% do faturamento em fiado = alerta
+            'threshold_fiado': 0.15,
         }
         for chave, valor in defaults.items():
             if not session.query(Configuracao).filter_by(chave=chave).first():
                 session.add(Configuracao(chave=chave, valor=valor))
         session.commit()
-        print("Banco de dados criado/atualizado com sucesso!")
+        print("Banco criado/atualizado com sucesso!")
     except Exception as e:
         session.rollback()
         print(f"Erro ao configurar banco: {e}")
