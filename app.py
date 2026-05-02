@@ -8,10 +8,7 @@ from ops import (
     registrar_extra, excluir_extra, buscar_extras_feira,
     calcular_saude_fiados, salvar_threshold_fiado, salvar_fator_quebra,
 )
-from database import Session, Feira, Compra, Cliente, HistoricoFiado, ExtraFeira, Configuracao, criar_banco
-
-# Garante que o banco existe antes de qualquer operação
-criar_banco()
+from database import Session, Feira, Compra, Cliente, HistoricoFiado, ExtraFeira, Configuracao
 from importar import parsear_notion_csv, parsear_notas_iphone, importar_feiras
 import pandas as pd
 
@@ -22,6 +19,7 @@ st.title("🥩 Sistema de Gestão da Banca")
 for k, v in {
     'form_reset_count': 0,
     'fiado_reset_count': 0,
+    'edit_reset_count': 0,
     'lista_gados_temp': [],
     'lista_extras_temp': [],
     'edit_feira_id': None,
@@ -295,11 +293,11 @@ with aba_previsao:
         st.warning("Você precisa ter pelo menos uma feira registrada para usar a previsão.")
     else:
         st.info(
-            f"Previsão baseada em {metricas['n_feiras']} feira(s)  |  "
-            f"Média histórica: {metricas['kg_medio_por_feira']:.0f} kg/feira  ·  "
-            f"Preço @ médio: R$ {metricas['preco_arroba_medio']:.2f}  ·  "
-            f"Margem média: {metricas['margem_media']:.1f}%  ·  "
-            f"Extras médios: R$ {metricas['extras_medio']:.2f}/feira"
+            f"Previsão baseada em **{metricas['n_feiras']} feira(s)**. "
+            f"Média histórica: **{metricas['kg_medio_por_feira']:.0f} kg/feira** · "
+            f"Preço @ médio: **R$ {metricas['preco_arroba_medio']:.2f}** · "
+            f"Margem média: **{metricas['margem_media']:.1f}%** · "
+            f"Extras médios: **R$ {metricas['extras_medio']:.2f}/feira**"
         )
 
         col_sim1, col_sim2 = st.columns(2)
@@ -928,20 +926,22 @@ with aba_gerenciar:
                         for c in compras_atuais
                     ]
                     st.session_state.edit_feira_id = id_edit
+                    st.session_state.edit_reset_count += 1  # reseta keys ao trocar de feira
 
                 if f_edit:
+                    eid = st.session_state.edit_reset_count
                     v_in = float(f_edit.caixa_in)
                     v_out = float(f_edit.caixa_out)
                     v_pix = float(f_edit.total_pix)
                     v_car = float(f_edit.total_cartao)
                     v_imp = float(f_edit.imposto) if f_edit.imposto else 0.0
 
-                    new_in  = st.number_input("Caixa Inicial", value=v_in, key="e_in")
-                    new_out = st.number_input("Caixa Espécie", value=v_out, key="e_out")
-                    new_pix = st.number_input("Pix", value=v_pix, key="e_pix")
-                    new_car = st.number_input("Cartão", value=v_car, key="e_car")
+                    new_in  = st.number_input("Caixa Inicial", value=v_in, key=f"e_in_{eid}")
+                    new_out = st.number_input("Caixa Espécie", value=v_out, key=f"e_out_{eid}")
+                    new_pix = st.number_input("Pix", value=v_pix, key=f"e_pix_{eid}")
+                    new_car = st.number_input("Cartão", value=v_car, key=f"e_car_{eid}")
                     new_imp = st.number_input(
-                        "🧾 Imposto (R$)", value=v_imp, key="e_imp",
+                        "🧾 Imposto (R$)", value=v_imp, key=f"e_imp_{eid}",
                         help="Informativo — já descontado do caixa"
                     )
 
