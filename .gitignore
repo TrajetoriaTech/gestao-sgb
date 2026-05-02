@@ -1,0 +1,11 @@
+# Ambiente Virtual
+venv/
+.env
+
+# Banco de Dados Local (Segurança)
+banca.db
+
+# Arquivos de Sistema e Cache
+__pycache__/
+*.py[cod]
+.streamlit/
