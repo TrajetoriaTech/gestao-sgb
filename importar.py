@@ -65,7 +65,9 @@ def _parse_peso_preco(obs: str):
     """
     Extrai lista de (peso, preco) de strings como:
       'Peso: 128.8(200@) + 122.5(180@)'   → dois lotes com preço inline
+      'Peso: 148.0 (220@) + 112.2 (200@)' → dois lotes com espaço antes do (
       'Peso: 90+112=202 (180@/200@)'       → dois lotes com preços separados por /
+      'Peso: 143.2 + 136.2 (250@)'         → dois pesos com preço compartilhado
       'Peso: 152.8 (200@)'                 → único lote
       'Peso: 149.7 (@OBS)'                 → preco=0, corrigir manualmente depois
     Retorna lista de dicts {'peso': float, 'preco': float}.
@@ -73,24 +75,25 @@ def _parse_peso_preco(obs: str):
     lotes = []
     obs = obs.strip()
 
-    # Padrão 1: N.N(P@) + N.N(P@) — cada lote com seu preço inline
-    padrao_inline = re.findall(r'([\d.]+)\s*\(([\d]+)@\)', obs)
-    if padrao_inline:
-        for peso_s, preco_s in padrao_inline:
-            lotes.append({'peso': float(peso_s), 'preco': float(preco_s)})
-        return lotes
-
-    # Padrão 2: N+N=TOTAL (P1@/P2@) — ex: 90+112=202 (180@/200@)
+    # Padrão 1: N+N=TOTAL (P1@/P2@) — ex: 90+112=202 (180@/200@)
     m_soma = re.match(r'Peso[:\s]*([\d.]+)\+([\d.]+)(?:=[\d.]+)?\s*\(([\d]+)@/([\d]+)@\)', obs)
     if m_soma:
         lotes.append({'peso': float(m_soma.group(1)), 'preco': float(m_soma.group(3))})
         lotes.append({'peso': float(m_soma.group(2)), 'preco': float(m_soma.group(4))})
         return lotes
 
-    # Padrão 3: Peso: NNN (P@) — único lote com preço
-    m = re.match(r'Peso[:\s]*([\d.]+)\s*\(([\d]+)@\)', obs)
-    if m:
-        lotes.append({'peso': float(m.group(1)), 'preco': float(m.group(2))})
+    # Padrão 2: N+N (P@) — dois pesos, preço compartilhado — ex: 143.2 + 136.2 (250@)
+    m_comp = re.match(r'Peso[:\s]*([\d.]+)\s*\+\s*([\d.]+)\s*\(([\d]+)@\)', obs)
+    if m_comp:
+        lotes.append({'peso': float(m_comp.group(1)), 'preco': float(m_comp.group(3))})
+        lotes.append({'peso': float(m_comp.group(2)), 'preco': float(m_comp.group(3))})
+        return lotes
+
+    # Padrão 3: N.N(P@) ou N.N (P@) repetido — cada lote com seu preço inline
+    padrao_inline = re.findall(r'([\d.]+)\s*\(([\d]+)@\)', obs)
+    if padrao_inline:
+        for peso_s, preco_s in padrao_inline:
+            lotes.append({'peso': float(peso_s), 'preco': float(preco_s)})
         return lotes
 
     # Padrão 4: Peso: NNN (@OBS) — marcador sem preço, importa com preco=0
