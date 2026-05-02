@@ -24,4 +24,19 @@ Tecnologias Utilizadas
     Banco de Dados: SQLite
 
 Como Executar o Projeto
-    Clone o repositório:
+    1. **Clone o repositório**:
+   ```bash
+   git clone [https://github.com/TrajetoriaTech/gestao-sgb.git](https://github.com/TrajetoriaTech/gestao-sgb.git)
+   cd gestao-sgb
+
+   2. **Crie e ative um ambiente virtual**:
+   ```bash
+   python -m venv venv
+   # No Windows:
+   .\venv\Scripts\activate
+
+   3. Instale as dependências:
+   pip install -r requirements.txt
+
+   4. Execute a aplicação:
+   streamlit run app.py
