@@ -64,29 +64,43 @@ def _parse_valor_br(s: str) -> float:
 def _parse_peso_preco(obs: str):
     """
     Extrai lista de (peso, preco) de strings como:
-      'Peso: 128.8(200@) + 122.5(180@)'
-      'Peso: 90+112=202 (180@/200@)'
-      'Peso: 152.8 (200@)'
+      'Peso: 128.8(200@) + 122.5(180@)'   → dois lotes com preço inline
+      'Peso: 90+112=202 (180@/200@)'       → dois lotes com preços separados por /
+      'Peso: 152.8 (200@)'                 → único lote
+      'Peso: 149.7 (@OBS)'                 → preco=0, corrigir manualmente depois
     Retorna lista de dicts {'peso': float, 'preco': float}.
     """
     lotes = []
     obs = obs.strip()
 
-    # Padrão: N.N(P@) + N.N(P@)  — cada lote com seu preço inline
+    # Padrão 1: N.N(P@) + N.N(P@) — cada lote com seu preço inline
     padrao_inline = re.findall(r'([\d.]+)\s*\(([\d]+)@\)', obs)
     if padrao_inline:
         for peso_s, preco_s in padrao_inline:
             lotes.append({'peso': float(peso_s), 'preco': float(preco_s)})
         return lotes
 
-    # Padrão: Peso: NNN (P@) — único lote
-    m = re.match(r'Peso:\s*([\d.]+)\s*\(([\d]+)@\)', obs)
+    # Padrão 2: N+N=TOTAL (P1@/P2@) — ex: 90+112=202 (180@/200@)
+    m_soma = re.match(r'Peso[:\s]*([\d.]+)\+([\d.]+)(?:=[\d.]+)?\s*\(([\d]+)@/([\d]+)@\)', obs)
+    if m_soma:
+        lotes.append({'peso': float(m_soma.group(1)), 'preco': float(m_soma.group(3))})
+        lotes.append({'peso': float(m_soma.group(2)), 'preco': float(m_soma.group(4))})
+        return lotes
+
+    # Padrão 3: Peso: NNN (P@) — único lote com preço
+    m = re.match(r'Peso[:\s]*([\d.]+)\s*\(([\d]+)@\)', obs)
     if m:
         lotes.append({'peso': float(m.group(1)), 'preco': float(m.group(2))})
         return lotes
 
-    # Fallback: tenta extrair qualquer número como peso sem preço (marca 0)
-    m2 = re.search(r'Peso:\s*([\d.]+)', obs)
+    # Padrão 4: Peso: NNN (@OBS) — marcador sem preço, importa com preco=0
+    m_obs = re.match(r'Peso[:\s]*([\d.]+)\s*\([^)]*@[A-Za-z][^)]*\)', obs)
+    if m_obs:
+        lotes.append({'peso': float(m_obs.group(1)), 'preco': 0.0})
+        return lotes
+
+    # Fallback: extrai só o peso, preco=0
+    m2 = re.search(r'Peso[:\s]*([\d.]+)', obs)
     if m2:
         lotes.append({'peso': float(m2.group(1)), 'preco': 0.0})
 
