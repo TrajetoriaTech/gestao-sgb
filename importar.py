@@ -4,6 +4,14 @@ Módulo de importação de dados para o SGB.
 Suporta dois formatos:
   1. CSV exportado do Notion (colunas: Observações, Tags, Números, Datas)
   2. Texto livre do Bloco de Notas do iPhone
+
+Correções v2:
+  - Fix valores gigantes no CSV (formato US: vírgula=milhar, ponto=decimal)
+  - Extras resetam após adicionar
+  - Texto de notas reseta após importar
+  - Fiados compostos: detecta crédito + débito na mesma linha
+  - "4,5kg fiado" → converte pelo preço_kg_dia informado, ou marca como pendente
+  - Casos mistos (pagou + levou fiado) → ambos extraídos e marcados para revisão
 """
 
 import re
@@ -18,11 +26,34 @@ from database import Session, Feira, Compra, Cliente, HistoricoFiado, ExtraFeira
 # UTILITÁRIOS
 # ─────────────────────────────────────────────
 
-def _parse_valor(s: str) -> float:
-    """Converte 'R$1.234,56' ou '-R$302,50' para float."""
-    s = s.strip().replace('R$', '').replace(' ', '')
+def _parse_valor_notion(s: str) -> float:
+    """
+    Converte valores do CSV do Notion para float.
+    O Notion exporta no formato US puro: vírgula = milhar, ponto = decimal.
+    Ex: '1,234.56' → 1234.56 | '302.00' → 302.0 | '-50.00' → -50.0
+    """
+    s = str(s).strip().replace('R$', '').replace(' ', '')
     negativo = s.startswith('-')
-    s = s.lstrip('-').replace('.', '').replace(',', '.')
+    s = s.lstrip('-+')
+    # Remove vírgulas de milhar (ex: 1,234.56 → 1234.56)
+    s = s.replace(',', '')
+    try:
+        v = float(s)
+        return -v if negativo else v
+    except ValueError:
+        return 0.0
+
+
+def _parse_valor_br(s: str) -> float:
+    """
+    Converte valores em formato BR para float.
+    Ex: '267,00' → 267.0 | '1.234,56' → 1234.56
+    """
+    s = str(s).strip().replace('R$', '').replace(' ', '')
+    negativo = s.startswith('-')
+    s = s.lstrip('-')
+    # Remove pontos de milhar e substitui vírgula decimal
+    s = s.replace('.', '').replace(',', '.')
     try:
         v = float(s)
         return -v if negativo else v
@@ -78,22 +109,10 @@ def parsear_notion_csv(conteudo_bytes: bytes) -> list[dict]:
     """
     Recebe o conteúdo bruto do CSV exportado do Notion e retorna
     lista de feiras prontas para importação.
-
-    Cada feira: {
-        'data': str dd/mm/yyyy,
-        'caixa_in': float,
-        'caixa_out': float,
-        'total_pix': float,
-        'total_cartao': float,
-        'lotes': [{'peso': float, 'preco': float}],
-        'obs': str,
-        'ja_existe': bool,
-    }
     """
     texto = conteudo_bytes.decode('utf-8-sig')
     reader = csv.DictReader(io.StringIO(texto))
 
-    # Agrupa linhas por data
     from collections import defaultdict
     by_date = defaultdict(list)
     for row in reader:
@@ -121,7 +140,8 @@ def parsear_notion_csv(conteudo_bytes: bytes) -> list[dict]:
                 tag = l.get('Tags', '').strip()
                 num_s = l.get('Números', '').strip()
                 obs = l.get('Observações ', '').strip()
-                valor = abs(_parse_valor(num_s)) if num_s else 0.0
+                # FIX: usa _parse_valor_notion para formato US do Notion
+                valor = abs(_parse_valor_notion(num_s)) if num_s else 0.0
 
                 if tag == 'Caixa IN':
                     caixa_in += valor
@@ -139,7 +159,7 @@ def parsear_notion_csv(conteudo_bytes: bytes) -> list[dict]:
                     total_cartao += valor
 
             if not lotes and caixa_in == 0 and caixa_out == 0:
-                continue  # linha de divisória / totalizador
+                continue
 
             feiras.append({
                 'data': data_str,
@@ -149,6 +169,7 @@ def parsear_notion_csv(conteudo_bytes: bytes) -> list[dict]:
                 'total_cartao': round(total_cartao, 2),
                 'lotes': lotes,
                 'obs': ' | '.join(obs_list),
+                'fiados_detectados': [],
                 'ja_existe': _feira_ja_existe(session, data_dt),
             })
     finally:
@@ -162,17 +183,12 @@ def parsear_notion_csv(conteudo_bytes: bytes) -> list[dict]:
 # ─────────────────────────────────────────────
 
 def _extrair_bloco_data(bloco: str):
-    """
-    Tenta extrair a data de um bloco de texto.
-    Aceita: 'Domingo 05 de abril 2026', '05/04/2026', '05-04-2026'
-    """
     meses = {
         'janeiro': 1, 'fevereiro': 2, 'março': 3, 'marco': 3,
         'abril': 4, 'maio': 5, 'junho': 6, 'julho': 7,
         'agosto': 8, 'setembro': 9, 'outubro': 10,
         'novembro': 11, 'dezembro': 12,
     }
-    # "Domingo 05 de abril 2026"
     m = re.search(r'(\d{1,2})\s+de\s+(\w+)\s+(\d{4})', bloco, re.IGNORECASE)
     if m:
         dia, mes_str, ano = int(m.group(1)), m.group(2).lower(), int(m.group(3))
@@ -182,7 +198,6 @@ def _extrair_bloco_data(bloco: str):
                 return datetime(ano, mes, dia)
             except ValueError:
                 pass
-    # "05/04/2026" ou "05-04-2026"
     m2 = re.search(r'(\d{2})[/-](\d{2})[/-](\d{4})', bloco)
     if m2:
         try:
@@ -193,9 +208,7 @@ def _extrair_bloco_data(bloco: str):
 
 
 def _soma_expressao(s: str) -> float:
-    """
-    Resolve expressões como '267,00 + 341,00' ou '128,00 + 125,00'.
-    """
+    """Resolve '267,00 + 341,00' ou '128,00 + 125,00'."""
     s = s.strip()
     partes = re.split(r'\+', s)
     total = 0.0
@@ -208,58 +221,121 @@ def _soma_expressao(s: str) -> float:
     return round(total, 2)
 
 
-def _extrair_fiados_notas(obs_texto: str) -> list[dict]:
+def _extrair_nome_inicio(linha: str) -> str:
+    """Extrai o nome no início da linha (uma ou mais palavras capitalizadas)."""
+    m = re.match(r'^([A-ZÀ-Ú][a-zA-Zà-úÀ-Ú]+(?:\s+[A-ZÀ-Ú][a-zA-Zà-úÀ-Ú]+)*)', linha.strip())
+    return m.group(1).strip() if m else 'Cliente'
+
+
+def _extrair_valor_reais(texto: str) -> float | None:
+    """Extrai o primeiro valor monetário (R$) da string, ignorando quantidades em kg."""
+    # Remove partes com kg para não confundir
+    texto_sem_kg = re.sub(r'[\d.,]+\s*kg\b', '', texto, flags=re.IGNORECASE)
+    m = re.search(r'R?\$?\s*([\d]+(?:[.,][\d]{1,2})?)', texto_sem_kg)
+    if m:
+        v = m.group(1).replace(',', '.')
+        try:
+            return float(v)
+        except ValueError:
+            pass
+    return None
+
+
+def _extrair_valor_kg(texto: str) -> float | None:
+    """Extrai quantidade em kg da string. Ex: '4,5kg' → 4.5"""
+    m = re.search(r'([\d]+(?:[.,][\d]+)?)\s*kg\b', texto, re.IGNORECASE)
+    if m:
+        try:
+            return float(m.group(1).replace(',', '.'))
+        except ValueError:
+            pass
+    return None
+
+
+def _extrair_fiados_notas(obs_texto: str, preco_kg_dia: float = 0.0) -> list[dict]:
     """
-    Tenta extrair movimentações de fiado das observações.
-    Retorna lista de {'nome': str, 'tipo': 'DEBITO'|'CREDITO', 'valor': float, 'descricao': str}.
-    Heurística: se menciona "pagou" → crédito; se menciona "fiado" sem "pagou" → débito.
+    Extrai movimentações de fiado das observações.
+
+    Melhorias v2:
+    - Detecta crédito + débito na mesma linha (casos mistos)
+    - Converte kg → R$ usando preco_kg_dia se informado
+    - Marca pendentes (kg sem preço) para revisão manual
+    - Flag 'revisar' indica que o lançamento precisa de conferência
+
+    Retorna lista de dicts:
+    {
+        'nome': str,
+        'tipo': 'DEBITO' | 'CREDITO',
+        'valor': float,
+        'descricao': str,
+        'revisar': bool,       # True = precisa revisão manual
+        'motivo_revisao': str  # Explicação do que ficou pendente
+    }
     """
     fiados = []
     linhas = [l.strip() for l in obs_texto.split('\n') if l.strip()]
+
     for linha in linhas:
-        # Extrai todos os valores monetários da linha
-        valores = re.findall(r'R?\$?\s*([\d]+(?:[,.][\d]{2})?)', linha)
-        if not valores:
-            continue
-        valor = 0.0
-        for v in valores:
-            v_f = float(v.replace(',', '.'))
-            if v_f > 0:
-                valor = v_f
-                break
-        if valor == 0:
-            continue
-
         linha_lower = linha.lower()
+        nome = _extrair_nome_inicio(linha)
 
-        # Extrai nome: primeira palavra(s) antes de verbos-chave
-        nome_m = re.match(r'^([A-ZÀ-Ú][a-zà-ú]+(?:\s+[A-ZÀ-Ú][a-zà-ú]+)*)', linha)
-        nome = nome_m.group(1).strip() if nome_m else 'Cliente'
+        tem_pagou = bool(re.search(r'pag(ou|amento|ou\s+os|ou\s+o\s+rest)', linha_lower))
+        tem_fiado = bool(re.search(r'fiado', linha_lower))
+        tem_kg    = bool(re.search(r'[\d.,]+\s*kg\b', linha_lower))
 
-        if re.search(r'pag(ou|amento|ou\s+os|ou\s+o\s+rest)', linha_lower):
+        # ── CRÉDITO: detecta pagamento ──────────────────────────
+        if tem_pagou:
+            valor_pago = _extrair_valor_reais(linha)
+            revisar = valor_pago is None
             fiados.append({
                 'nome': nome,
                 'tipo': 'CREDITO',
-                'valor': valor,
+                'valor': valor_pago or 0.0,
                 'descricao': linha[:120],
+                'revisar': revisar or (tem_fiado),  # misto → sempre revisar
+                'motivo_revisao': (
+                    'Valor do pagamento não identificado — preencha manualmente.' if valor_pago is None
+                    else ('Linha mista: pagamento + novo fiado detectados — confira os valores.' if tem_fiado else '')
+                ),
             })
-        elif re.search(r'fiado', linha_lower):
+
+        # ── DÉBITO: detecta fiado ────────────────────────────────
+        if tem_fiado:
+            valor_fiado = _extrair_valor_reais(linha)
+            kg_fiado = _extrair_valor_kg(linha) if tem_kg else None
+            revisar = False
+            motivo = ''
+
+            if kg_fiado is not None:
+                # Tem quantidade em kg
+                if preco_kg_dia and preco_kg_dia > 0:
+                    valor_fiado = round(kg_fiado * preco_kg_dia, 2)
+                    motivo = f'{kg_fiado}kg × R${preco_kg_dia:.2f}/kg = R${valor_fiado:.2f}'
+                else:
+                    # Sem preço de referência → marca como pendente
+                    valor_fiado = 0.0
+                    revisar = True
+                    motivo = f'{kg_fiado}kg sem preço/kg configurado — preencha o valor manualmente.'
+
+            if valor_fiado is None or valor_fiado == 0.0:
+                revisar = True
+                motivo = motivo or 'Valor não identificado — preencha manualmente.'
+
             fiados.append({
                 'nome': nome,
                 'tipo': 'DEBITO',
-                'valor': valor,
+                'valor': valor_fiado or 0.0,
                 'descricao': linha[:120],
+                'revisar': revisar or (tem_pagou),  # misto → sempre revisar
+                'motivo_revisao': motivo or ('Linha mista: pagamento + novo fiado — confira os valores.' if tem_pagou else ''),
             })
+
+        # ── Linha sem marcador claro — ignora ───────────────────
 
     return fiados
 
 
 def _extrair_extras_notas(extras_texto: str) -> list[dict]:
-    """
-    Extrai itens de 'Extras:' — linhas com 'Nome: valor'.
-    Ignora itens com tags 'Extra' ou pessoais (Netflix, Internet, Mãe etc.)
-    conforme RN05.
-    """
     ignorar = {'netflix', 'internet', 'mãe', 'mae', 'spotify', 'amazon', 'uber',
                'ifood', 'combustivel', 'combustível', 'gasolina', 'escola', 'faculdade'}
     extras = []
@@ -280,12 +356,11 @@ def _extrair_extras_notas(extras_texto: str) -> list[dict]:
     return extras
 
 
-def parsear_notas_iphone(texto: str) -> list[dict]:
+def parsear_notas_iphone(texto: str, preco_kg_dia: float = 0.0) -> list[dict]:
     """
-    Recebe texto livre copiado do Bloco de Notas e retorna
-    lista de feiras prontas para importação.
+    Recebe texto livre do Bloco de Notas e retorna lista de feiras.
+    preco_kg_dia: preço por kg informado pelo usuário para converter fiados em kg → R$.
     """
-    # Divide em blocos por data (linha que começa com dia da semana ou padrão de data)
     separador = re.compile(
         r'(?:Segunda|Terça|Terca|Quarta|Quinta|Sexta|Sábado|Sabado|Domingo)'
         r'[\s,]+\d{1,2}|'
@@ -311,7 +386,7 @@ def parsear_notas_iphone(texto: str) -> list[dict]:
             if not data_dt:
                 continue
 
-            # Pesos — linhas numéricas após "Peso:"
+            # Pesos e Preços
             lotes = []
             m_peso_section = re.search(r'Peso[:\s]*(.*?)(?:Preço|Preco|Caixa|$)', bloco, re.IGNORECASE | re.DOTALL)
             m_preco_section = re.search(r'Preç?o[:\s]*(.*?)(?:Caixa|$)', bloco, re.IGNORECASE | re.DOTALL)
@@ -333,29 +408,27 @@ def parsear_notas_iphone(texto: str) -> list[dict]:
                 preco = precos[i] if i < len(precos) else (precos[-1] if precos else 0.0)
                 lotes.append({'peso': peso, 'preco': preco})
 
-            # Caixa IN — pode ter soma "267,00 + 341,00"
+            # Caixa IN/OUT
             caixa_in = 0.0
             m_cin = re.search(r'[Cc]aixa\s+in[:\s]+([\d,.\s+]+)', bloco, re.IGNORECASE)
             if m_cin:
                 caixa_in = _soma_expressao(m_cin.group(1))
 
-            # Caixa OUT — pode ter soma "128,00 + 125,00"
             caixa_out = 0.0
             m_cout = re.search(r'[Cc]aixa\s+out[:\s]+([\d,.\s+]+)', bloco, re.IGNORECASE)
             if m_cout:
                 caixa_out = _soma_expressao(m_cout.group(1))
 
-            # Cartão
+            # Cartão e Pix
             total_cartao = 0.0
             m_cart = re.search(r'[Cc]art[ãa]o[:\s]+([\d,.]+)', bloco, re.IGNORECASE)
             if m_cart:
-                total_cartao = float(m_cart.group(1).replace('.', '').replace(',', '.'))
+                total_cartao = _parse_valor_br(m_cart.group(1))
 
-            # Pix
             total_pix = 0.0
             m_pix = re.search(r'[Pp]ix[:\s]+([\d,.]+)', bloco, re.IGNORECASE)
             if m_pix:
-                total_pix = float(m_pix.group(1).replace('.', '').replace(',', '.'))
+                total_pix = _parse_valor_br(m_pix.group(1))
 
             # Extras
             extras = []
@@ -368,7 +441,7 @@ def parsear_notas_iphone(texto: str) -> list[dict]:
             m_obs = re.search(r'[Oo]bservações?[:\s]*(.*?)$', bloco, re.DOTALL)
             obs_raw = m_obs.group(1).strip() if m_obs else ''
             if obs_raw:
-                fiados = _extrair_fiados_notas(obs_raw)
+                fiados = _extrair_fiados_notas(obs_raw, preco_kg_dia=preco_kg_dia)
 
             feiras.append({
                 'data': data_dt.strftime('%d/%m/%Y'),
@@ -395,6 +468,8 @@ def parsear_notas_iphone(texto: str) -> list[dict]:
 def importar_feiras(feiras: list[dict], importar_fiados: bool = True) -> dict:
     """
     Recebe lista de feiras parseadas e grava no banco.
+    Fiados com valor == 0 ou revisar == True são pulados automaticamente
+    (o usuário deve lançá-los manualmente).
     Retorna {'importadas': int, 'puladas': int, 'erros': int}.
     """
     importadas = puladas = erros = 0
@@ -438,6 +513,9 @@ def importar_feiras(feiras: list[dict], importar_fiados: bool = True) -> dict:
 
                 if importar_fiados:
                     for fd in f.get('fiados_detectados', []):
+                        # Pula fiados que precisam de revisão ou com valor zero
+                        if fd.get('revisar') or fd.get('valor', 0) == 0:
+                            continue
                         nome = fd['nome'].strip().title()
                         if not nome:
                             continue
