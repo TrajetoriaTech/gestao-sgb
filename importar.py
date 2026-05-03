@@ -597,6 +597,63 @@ def _extrair_lotes_arquivo(bloco: str) -> list:
     return lotes if lotes else [{'peso': 1, 'preco': 0, 'sexo': 'M'}]
 
 
+def _detectar_formato_2024(bloco: str) -> bool:
+    """Formato 2024: Peso com preço inline e Caixa: X - (Y)"""
+    return (bool(re.search(r'Peso[:\s]*[\d.]+\s*\(', bloco, re.IGNORECASE)) and
+            not bool(re.search(r'[Cc]aixa\s+in[:\s]', bloco)))
+
+
+def _extrair_peso_preco_2024(bloco: str):
+    padroes = [
+        r'Peso[:\s]*([\d.]+)\s*\(comprado\s+a\s+([\d.,]+)',
+        r'Peso[:\s]*([\d.]+)\s*\(\s*a\s+([\d.,]+)',
+        r'Peso[:\s]*([\d.]+)\s*\(([\d.,]+)\s*a\s+@',
+        r'Peso[:\s]*([\d.]+)\s*\(([\d.,]+)@',
+        r'Peso[:\s]*([\d.]+)\s*\(([\d.,]+)\s*@',
+    ]
+    for padrao in padroes:
+        m = re.search(padrao, bloco, re.IGNORECASE)
+        if m:
+            try:
+                return float(m.group(1)), _parse_valor_br(m.group(2))
+            except:
+                pass
+    m = re.search(r'Peso[:\s]*([\d.]+)', bloco, re.IGNORECASE)
+    if m:
+        try:
+            return float(m.group(1)), 0.0
+        except:
+            pass
+    return 0.0, 0.0
+
+
+def _extrair_caixa_2024(bloco: str):
+    m = re.search(r'[Cc]aixa[:\s]*([\d.,]+)\s*[-–]\s*\(?([\d.,]+)', bloco)
+    if m:
+        return _parse_valor_br(m.group(1)), _parse_valor_br(m.group(2))
+    m = re.search(r'[Cc]aixa[:\s]*([\d.,]+)', bloco)
+    if m:
+        return 0.0, _parse_valor_br(m.group(1))
+    return 0.0, 0.0
+
+
+def _extrair_pix_2024(bloco: str) -> float:
+    m_total = re.search(r'[Pp]ix[:\s]*\(([\d.,]+)\)', bloco)
+    if m_total:
+        return _parse_valor_br(m_total.group(1))
+    m_section = re.search(r'[Pp]ix[:\s]*\n((?:\s*[\d.,]+\n)+)', bloco)
+    if m_section:
+        vals = re.findall(r'[\d.,]+', m_section.group(1))
+        return round(sum(_parse_valor_br(v) for v in vals if _parse_valor_br(v) > 5), 2)
+    m = re.search(r'[Pp]ix[:\s]*([\d.,]+)', bloco)
+    return _parse_valor_br(m.group(1)) if m else 0.0
+
+
+def _extrair_cartao_2024(bloco: str) -> float:
+    m = re.search(r'[Cc]art[ãao]o[:\s]*\n?\s*\(?([\d.,]+)\)?', bloco)
+    return _parse_valor_br(m.group(1)) if m else 0.0
+
+
 def parsear_arquivo_notas(texto: str, preco_kg_dia: float = 0.0) -> list[dict]:
     """
     Parser unificado para arquivos de notas (formato antigo e novo).
@@ -626,13 +683,29 @@ def parsear_arquivo_notas(texto: str, preco_kg_dia: float = 0.0) -> list[dict]:
             ja_existe = _feira_ja_existe(session, data_dt)
             fmt_novo = _detectar_formato_novo(bloco)
 
-            cin, cout = (_extrair_caixa_novo(bloco) if fmt_novo
-                         else _extrair_caixa_antigo(bloco))
-            # Pix funciona nos dois formatos
-            m_pix = re.search(r'[Pp]ix[:\s]*([\.\d.,+\s=]+)', bloco)
-            pix = _soma_expressao(m_pix.group(1)) if m_pix else 0.0
-            cartao = _extrair_cartao_arquivo(bloco, fmt_novo)
-            lotes = _extrair_lotes_arquivo(bloco)
+            fmt_2024 = _detectar_formato_2024(bloco)
+
+            if fmt_novo:
+                cin, cout = _extrair_caixa_novo(bloco)
+                pix_raw = re.search(r'[Pp]ix[:\s]*([\.\d.,+\s=]+)', bloco)
+                pix = _soma_expressao(pix_raw.group(1)) if pix_raw else 0.0
+                cartao = _extrair_cartao_arquivo(bloco, True)
+            elif fmt_2024:
+                cin, cout = _extrair_caixa_2024(bloco)
+                pix = _extrair_pix_2024(bloco)
+                cartao = _extrair_cartao_2024(bloco)
+            else:
+                cin, cout = _extrair_caixa_antigo(bloco)
+                pix_raw = re.search(r'[Pp]ix[:\s]*([\.\d.,+\s=]+)', bloco)
+                pix = _soma_expressao(pix_raw.group(1)) if pix_raw else 0.0
+                cartao = _extrair_cartao_arquivo(bloco, False)
+
+            lotes = _extrair_lotes_arquivo(bloco) if (fmt_novo or fmt_2024) else [{'peso': 1, 'preco': 0, 'sexo': 'M'}]
+            # Para 2024, usa peso/preço da linha de Peso
+            if fmt_2024:
+                peso, preco = _extrair_peso_preco_2024(bloco)
+                if peso > 0:
+                    lotes = [{'peso': peso, 'preco': preco, 'sexo': 'M'}]
 
             # Fiados e extras só no formato novo
             obs_inicio = bloco.find('Observ')
@@ -762,4 +835,3 @@ def importar_feiras(feiras: list[dict], importar_fiados: bool = True) -> dict:
         session.close()
 
     return {'importadas': importadas, 'puladas': puladas, 'erros': erros}
-
