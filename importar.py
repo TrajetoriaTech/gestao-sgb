@@ -478,6 +478,201 @@ def parsear_notas_iphone(texto: str, preco_kg_dia: float = 0.0) -> list[dict]:
     return feiras
 
 
+
+# ─────────────────────────────────────────────
+# PARSER 3 — ARQUIVO DE NOTAS (FORMATO ANTIGO + NOVO)
+# ─────────────────────────────────────────────
+
+def _detectar_formato_novo(bloco: str) -> bool:
+    """Retorna True se o bloco usa o formato novo (Caixa in: / Caixa out:)."""
+    return bool(re.search(r'[Cc]aixa\s+in[:\s]', bloco))
+
+
+def _extrair_caixa_novo(bloco: str):
+    m_in = re.search(r'[Cc]aixa\s+in[:\s]+([\.\d,\.\s+=]+)', bloco)
+    m_out = re.search(r'[Cc]aixa\s+out[:\s]+([\.\d,\.\s+=]+)', bloco)
+    return (_soma_expressao(m_in.group(1)) if m_in else 0.0,
+            _soma_expressao(m_out.group(1)) if m_out else 0.0)
+
+
+def _extrair_caixa_antigo(bloco: str):
+    m_linha = re.search(r'[Cc]aixa[:\s]*(.*?)(?:\n|$)', bloco)
+    if not m_linha:
+        return 0.0, 0.0
+    linha = m_linha.group(1).strip().replace('✅','').replace('——','').replace('—','').strip()
+    pos = m_linha.end()
+    proxima = ''
+    for l in bloco[pos:].split('\n'):
+        l = l.strip()
+        if l:
+            proxima = l.replace('✅', '').strip()
+            break
+    # X + Y (out na próxima linha)
+    m = re.match(r'([\d.,]+)\s*\+\s*\(?([\d.,]+)\)?$', linha)
+    if m:
+        mp = re.match(r'\(?([\d.,]+)\)?', proxima)
+        return (_parse_valor_br(m.group(1)) + _parse_valor_br(m.group(2)),
+                _parse_valor_br(mp.group(1)) if mp else 0.0)
+    # X + Y — (Z) ou X + Y = Z
+    m = re.match(r'([\d.,]+)\s*\+\s*\(?([\d.,]+)\)?.*[\(=]([\d.,]+)\)?$', linha)
+    if m and m.group(3) != m.group(1):
+        return (_parse_valor_br(m.group(1)) + _parse_valor_br(m.group(2)),
+                _parse_valor_br(m.group(3)))
+    # -X / -Y(pix) / (Z)
+    m = re.match(r'-?([\d.,]+)\s*/\s*-?([\d.,]+)\(?pix\)?\s*/\s*\(?([\d.,]+)', linha, re.IGNORECASE)
+    if m:
+        return (_parse_valor_br(m.group(1)) + _parse_valor_br(m.group(2)),
+                _parse_valor_br(m.group(3)))
+    # -X (+Y)
+    m = re.match(r'-?([\d.,]+)\s*\(\+?([\d.,]+)\)', linha)
+    if m:
+        return _parse_valor_br(m.group(2)), _parse_valor_br(m.group(1))
+    # X (-Y)
+    m = re.match(r'([\d.,]+)\s*\(-?([\d.,]+)\)', linha)
+    if m:
+        return _parse_valor_br(m.group(1)), _parse_valor_br(m.group(2))
+    # total X
+    m_tot = re.search(r'total\s+([\d.,]+)', linha, re.IGNORECASE)
+    if m_tot:
+        nums = re.findall(r'[\d.,]+', m_linha.group(1))
+        vals = [_parse_valor_br(n) for n in nums if _parse_valor_br(n) > 0]
+        if len(vals) >= 2:
+            return sum(vals[:-1]), vals[-1]
+        if vals:
+            return 0.0, vals[0]
+    # X (Y)
+    m = re.match(r'([\d.,]+)\s+\(?\s*([\d.,]+)\s*\)?', linha)
+    if m:
+        return _parse_valor_br(m.group(1)), _parse_valor_br(m.group(2))
+    # só X
+    m = re.match(r'([\d.,]+)', linha)
+    if m:
+        return 0.0, _parse_valor_br(m.group(1))
+    return 0.0, 0.0
+
+
+def _extrair_cartao_arquivo(bloco: str, formato_novo: bool) -> float:
+    if formato_novo:
+        m = re.search(r'[Cc]art[ãao]o[:\s]*([\d.,]+)', bloco)
+        return _parse_valor_br(m.group(1)) if m else 0.0
+    # Formato antigo: tenta "Cartões: X" ou seção Eu
+    m_cart = re.search(r'[Cc]art[õo]es?[:\s]+([\d.,]+)', bloco)
+    if m_cart:
+        return _parse_valor_br(m_cart.group(1))
+    m_eu = re.search(
+        r'\bEu[:\s]*\n(.*?)(?:\n(?:Mãe|Mae|Pai|N°|Carnes|Fiado|Dinheiro|Observ|Quebras|Extras|Daniel|Ionara)\b|$)',
+        bloco, re.DOTALL | re.IGNORECASE)
+    if not m_eu:
+        return 0.0
+    totais = []
+    for linha in m_eu.group(1).split('\n'):
+        linha = linha.strip().replace('(', '').replace(')', '')
+        if not linha or ' - ' in linha or '+' in linha:
+            continue
+        m = re.match(r'^([\d.]+,\d{2})$', linha)
+        if m:
+            v = _parse_valor_br(m.group(1))
+            if v > 50:
+                totais.append(v)
+    return totais[-1] if totais else 0.0
+
+
+def _extrair_lotes_arquivo(bloco: str) -> list:
+    """Extrai lotes do formato novo; retorna placeholder para formato antigo."""
+    m_peso = re.search(r'Peso[:\s]*(.*?)(?:Preço|Preco|Caixa|$)', bloco, re.IGNORECASE | re.DOTALL)
+    m_preco = re.search(r'Preç?o[:\s]*(.*?)(?:Caixa|$)', bloco, re.IGNORECASE | re.DOTALL)
+    pesos, precos = [], []
+    if m_peso:
+        raw = m_peso.group(1)
+        pesos = [float(p.replace(',', '.')) for p in re.findall(r'[\d]+(?:[.,][\d]+)?', raw)
+                 if float(p.replace(',', '.')) > 5]
+    if m_preco:
+        raw = m_preco.group(1)
+        precos = [float(p.replace(',', '.')) for p in re.findall(r'[\d]+(?:[.,][\d]+)?', raw)
+                  if float(p.replace(',', '.')) > 50]
+    lotes = []
+    for i, peso in enumerate(pesos):
+        preco = precos[i] if i < len(precos) else (precos[-1] if precos else 0.0)
+        lotes.append({'peso': peso, 'preco': preco, 'sexo': 'M'})
+    return lotes if lotes else [{'peso': 1, 'preco': 0, 'sexo': 'M'}]
+
+
+def parsear_arquivo_notas(texto: str, preco_kg_dia: float = 0.0) -> list[dict]:
+    """
+    Parser unificado para arquivos de notas (formato antigo e novo).
+    Detecta automaticamente o formato de cada bloco.
+    Feiras sem caixa identificável são puladas com aviso.
+    Lotes sem peso (formato antigo) entram com peso=1, preco=0.
+    """
+    separador = re.compile(
+        r'(?:Segunda|Terça|Terca|Quarta|Quinta|Sexta|Sábado|Sabado|Domingo)' +
+        r'[\s,dia\(]*\d{1,2}|' +
+        r'Dia\s+\d{1,2}\s+de\s+\w+|' +
+        r'\d{1,2}\s+de\s+\w+(?:\s+de)?\s+\d{4}',
+        re.IGNORECASE)
+    posicoes = [m.start() for m in separador.finditer(texto)]
+    if not posicoes:
+        return []
+    blocos = [texto[posicoes[i]:posicoes[i+1] if i+1 < len(posicoes) else len(texto)]
+              for i in range(len(posicoes))]
+
+    session = Session()
+    feiras = []
+    try:
+        for bloco in blocos:
+            data_dt = _extrair_bloco_data(bloco)
+            if not data_dt:
+                continue
+            ja_existe = _feira_ja_existe(session, data_dt)
+            fmt_novo = _detectar_formato_novo(bloco)
+
+            cin, cout = (_extrair_caixa_novo(bloco) if fmt_novo
+                         else _extrair_caixa_antigo(bloco))
+            pix = _extrair_pix(bloco) if fmt_novo else (
+                lambda b: (lambda m: _soma_expressao(m.group(1)) if m else 0.0)
+                (re.search(r'[Pp]ix[:\s]*([\d.,+\s=]+)', b)))(bloco)
+            cartao = _extrair_cartao_arquivo(bloco, fmt_novo)
+            lotes = _extrair_lotes_arquivo(bloco)
+
+            # Fiados e extras só no formato novo
+            fiados = _extrair_fiados_notas(bloco[bloco.find('Observ'):] if 'Observ' in bloco else '',
+                                           preco_kg_dia) if fmt_novo else []
+            extras = _extrair_extras_notas(
+                (lambda m: m.group(1) if m else '')                (re.search(r'[Ee]xtras?[:\s]*(.*?)(?:[Oo]bservações?|[Cc]arnes|[Ee]mpréstimos|[Qq]uebras|$)',
+                           bloco, re.DOTALL))) if fmt_novo else []
+
+            if cout == 0 and cartao == 0 and cin == 0:
+                feiras.append({
+                    'data': data_dt.strftime('%d/%m/%Y'),
+                    'caixa_in': 0.0, 'caixa_out': 0.0,
+                    'total_pix': 0.0, 'total_cartao': 0.0,
+                    'lotes': lotes, 'extras': [], 'fiados_detectados': [],
+                    'obs_raw': '', 'ja_existe': ja_existe,
+                    'formato_antigo': not fmt_novo,
+                    'pulada': True, 'motivo_pulada': 'Caixa não identificado — preencha manualmente',
+                })
+                continue
+
+            feiras.append({
+                'data': data_dt.strftime('%d/%m/%Y'),
+                'caixa_in': round(cin, 2),
+                'caixa_out': round(cout, 2),
+                'total_pix': round(pix, 2),
+                'total_cartao': round(cartao, 2),
+                'lotes': lotes,
+                'extras': extras,
+                'fiados_detectados': fiados,
+                'obs_raw': '',
+                'ja_existe': ja_existe,
+                'formato_antigo': not fmt_novo,
+                'pulada': False,
+                'motivo_pulada': '',
+            })
+    finally:
+        session.close()
+    return feiras
+
+
 # ─────────────────────────────────────────────
 # IMPORTAÇÃO EFETIVA
 # ─────────────────────────────────────────────
