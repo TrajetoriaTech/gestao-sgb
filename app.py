@@ -725,7 +725,8 @@ with aba_importar:
 
     # ── PRÉ-VISUALIZAÇÃO ────────────────────────────────────
     if feiras_preview:
-        novas = [f for f in feiras_preview if not f['ja_existe'] and not f.get('pulada')]
+        novas = [f for f in feiras_preview if not f['ja_existe'] and not f.get('pulada') and not f.get('revisar')]
+        revisar = [f for f in feiras_preview if not f['ja_existe'] and not f.get('pulada') and f.get('revisar')]
         existentes = [f for f in feiras_preview if f['ja_existe']]
 
         st.divider()
@@ -733,6 +734,33 @@ with aba_importar:
         col_res1.metric("📋 Feiras encontradas", len(feiras_preview))
         col_res2.metric("✅ Novas (serão importadas)", len(novas))
         col_res3.metric("⏭️ Já existem (serão puladas)", len(existentes))
+
+        if revisar:
+            st.warning(
+                f"⚠️ **{len(revisar)} feira(s) precisam de revisão** — lucro negativo detectado. "
+                "Verifique se cartão/pix estão completos antes de importar. "
+                "Você pode importá-las mesmo assim usando o toggle abaixo.",
+                icon="✏️"
+            )
+            with st.expander(f"⚠️ {len(revisar)} feira(s) para revisar"):
+                rows_rev = []
+                for f in revisar:
+                    rows_rev.append({
+                        "Data": f['data'],
+                        "Caixa IN": f"R$ {f['caixa_in']:.2f}",
+                        "Caixa OUT": f"R$ {f['caixa_out']:.2f}",
+                        "Pix": f"R$ {f['total_pix']:.2f}",
+                        "Cartão": f"R$ {f['total_cartao']:.2f}",
+                        "Motivo": f.get('motivo_revisao', '')[:60],
+                    })
+                st.dataframe(pd.DataFrame(rows_rev), use_container_width=True, hide_index=True)
+            importar_revisao = st.toggle(
+                f"Incluir feiras com revisão pendente na importação ({len(revisar)} feiras)",
+                value=False,
+                help="Importa mesmo com lucro negativo — você pode corrigir depois pelo Editar Registro."
+            )
+            if importar_revisao:
+                novas = novas + revisar
 
         if not novas:
             st.info("Todas as feiras encontradas já estão no banco. Nada a importar.")
