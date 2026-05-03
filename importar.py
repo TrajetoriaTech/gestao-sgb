@@ -762,3 +762,4 @@ def importar_feiras(feiras: list[dict], importar_fiados: bool = True) -> dict:
         session.close()
 
     return {'importadas': importadas, 'puladas': puladas, 'erros': erros}
+
