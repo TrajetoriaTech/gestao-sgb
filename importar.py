@@ -628,18 +628,21 @@ def parsear_arquivo_notas(texto: str, preco_kg_dia: float = 0.0) -> list[dict]:
 
             cin, cout = (_extrair_caixa_novo(bloco) if fmt_novo
                          else _extrair_caixa_antigo(bloco))
-            pix = _extrair_pix(bloco) if fmt_novo else (
-                lambda b: (lambda m: _soma_expressao(m.group(1)) if m else 0.0)
-                (re.search(r'[Pp]ix[:\s]*([\d.,+\s=]+)', b)))(bloco)
+            # Pix funciona nos dois formatos
+            m_pix = re.search(r'[Pp]ix[:\s]*([\.\d.,+\s=]+)', bloco)
+            pix = _soma_expressao(m_pix.group(1)) if m_pix else 0.0
             cartao = _extrair_cartao_arquivo(bloco, fmt_novo)
             lotes = _extrair_lotes_arquivo(bloco)
 
             # Fiados e extras só no formato novo
-            fiados = _extrair_fiados_notas(bloco[bloco.find('Observ'):] if 'Observ' in bloco else '',
-                                           preco_kg_dia) if fmt_novo else []
-            extras = _extrair_extras_notas(
-                (lambda m: m.group(1) if m else '')                (re.search(r'[Ee]xtras?[:\s]*(.*?)(?:[Oo]bservações?|[Cc]arnes|[Ee]mpréstimos|[Qq]uebras|$)',
-                           bloco, re.DOTALL))) if fmt_novo else []
+            obs_inicio = bloco.find('Observ')
+            fiados = _extrair_fiados_notas(
+                bloco[obs_inicio:] if obs_inicio >= 0 else '',
+                preco_kg_dia) if fmt_novo else []
+            m_extra = re.search(
+                r'[Ee]xtras?[:\s]*(.*?)(?:[Oo]bservações?|[Cc]arnes|[Ee]mpréstimos|[Qq]uebras|$)',
+                bloco, re.DOTALL)
+            extras = _extrair_extras_notas(m_extra.group(1) if m_extra else '') if fmt_novo else []
 
             if cout == 0 and cartao == 0 and cin == 0:
                 feiras.append({
