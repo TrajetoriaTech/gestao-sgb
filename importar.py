@@ -726,8 +726,14 @@ def parsear_arquivo_notas(texto: str, preco_kg_dia: float = 0.0) -> list[dict]:
                     'obs_raw': '', 'ja_existe': ja_existe,
                     'formato_antigo': not fmt_novo,
                     'pulada': True, 'motivo_pulada': 'Caixa não identificado — preencha manualmente',
+                    'revisar': True, 'motivo_revisao': 'Caixa não identificado — preencha manualmente',
                 })
                 continue
+
+            # Flag de revisão: lucro negativo ou cartão+pix zerados com caixa baixo
+            lucro_estimado = round(cout + pix + cartao - cin, 2)
+            precisa_revisao = lucro_estimado < 0
+            motivo_revisao = 'Lucro negativo — verifique se cartão/pix estão completos.' if precisa_revisao else ''
 
             feiras.append({
                 'data': data_dt.strftime('%d/%m/%Y'),
@@ -743,6 +749,8 @@ def parsear_arquivo_notas(texto: str, preco_kg_dia: float = 0.0) -> list[dict]:
                 'formato_antigo': not fmt_novo,
                 'pulada': False,
                 'motivo_pulada': '',
+                'revisar': precisa_revisao,
+                'motivo_revisao': motivo_revisao,
             })
     finally:
         session.close()
