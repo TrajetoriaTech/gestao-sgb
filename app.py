@@ -716,7 +716,7 @@ with aba_importar:
             )
         if arquivo_notas:
             with st.spinner("Interpretando arquivo..."):
-                texto_arq = arquivo_notas.read().decode('utf-8')
+                texto_arq = arquivo_notas.read().decode('utf-8', errors='replace').replace('\r\n', '\n').replace('\r', '\n')
                 feiras_preview = parsear_arquivo_notas(texto_arq, preco_kg_dia=preco_kg_arq)
             st.session_state['import_preview'] = feiras_preview
 
