@@ -9,7 +9,7 @@ from ops import (
     calcular_saude_fiados, salvar_threshold_fiado, salvar_fator_quebra,
 )
 from database import Session, Feira, Compra, Cliente, HistoricoFiado, ExtraFeira, Configuracao
-from importar import parsear_notion_csv, parsear_notas_iphone, importar_feiras
+from importar import parsear_notion_csv, parsear_notas_iphone, importar_feiras, parsear_arquivo_notas
 import pandas as pd
 
 st.set_page_config(page_title="Gestão da Banca", layout="wide")
@@ -245,8 +245,10 @@ with aba_bi:
                 'Extras (R$)': 'sum',
                 'Lucro Líquido (R$)': 'sum',
                 'Lucro Só Carne (R$)': 'sum',
-                'KG Total': 'sum'
+                'KG Total': 'sum',
+                'ID': 'count'
             }).reset_index()
+            df_mensal.rename(columns={'ID': 'N° Feiras'}, inplace=True)
             df_mensal['Lucro/KG Médio'] = round(df_mensal['Lucro Líquido (R$)'] / df_mensal['KG Total'], 2)
 
             # Agrupa meses por ano para paginação
@@ -623,7 +625,7 @@ with aba_importar:
 
     modo = st.radio(
         "Fonte dos dados",
-        ["📄 CSV do Notion", "📝 Bloco de Notas (texto livre)"],
+        ["📄 CSV do Notion", "📝 Bloco de Notas (texto livre)", "📁 Arquivo de Notas (.txt)"],
         horizontal=True,
         key="import_modo"
     )
@@ -690,9 +692,40 @@ with aba_importar:
         if 'import_preview' in st.session_state and modo != "📄 CSV do Notion":
             feiras_preview = st.session_state['import_preview']
 
+    # ── ARQUIVO DE NOTAS (.txt) ─────────────────────────────
+    if modo == "📁 Arquivo de Notas (.txt)":
+        st.markdown(
+            "Faça upload do arquivo `.txt` exportado das notas do iPhone. "
+            "Suporta formato antigo (2023/2024) e novo (2025/2026) automaticamente."
+        )
+        col_arq1, col_arq2 = st.columns([3, 1])
+        with col_arq2:
+            preco_kg_arq = st.number_input(
+                "💰 Preço do kg (R$)",
+                min_value=0.0, value=0.0, step=0.5, format="%.2f",
+                key="preco_kg_arq",
+                help="Usado para converter fiados em kg → R$ nas notas novas."
+            )
+            if preco_kg_arq > 0:
+                st.caption(f"✅ 1 kg = R$ {preco_kg_arq:.2f}")
+            else:
+                st.caption("⚠️ Sem preço/kg — fiados em kg ficam pendentes.")
+        with col_arq1:
+            arquivo_notas = st.file_uploader(
+                "Arquivo de notas (.txt)", type=["txt"], key="arquivo_notas_txt"
+            )
+        if arquivo_notas:
+            with st.spinner("Interpretando arquivo..."):
+                texto_arq = arquivo_notas.read().decode('utf-8')
+                feiras_preview = parsear_arquivo_notas(texto_arq, preco_kg_dia=preco_kg_arq)
+            st.session_state['import_preview'] = feiras_preview
+
+        if 'import_preview' in st.session_state and modo == "📁 Arquivo de Notas (.txt)":
+            feiras_preview = st.session_state['import_preview']
+
     # ── PRÉ-VISUALIZAÇÃO ────────────────────────────────────
     if feiras_preview:
-        novas = [f for f in feiras_preview if not f['ja_existe']]
+        novas = [f for f in feiras_preview if not f['ja_existe'] and not f.get('pulada')]
         existentes = [f for f in feiras_preview if f['ja_existe']]
 
         st.divider()
